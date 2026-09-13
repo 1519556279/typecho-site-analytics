@@ -109,7 +109,7 @@ try {
 /* 最近访问明细 */
 $recent = [];
 try {
-    $recent = $db->fetchAll($db->select('ip_hash', 'url', 'referer', 'ua', 'is_bot', 'created')
+    $recent = $db->fetchAll($db->select('ip_hash', 'ip', 'region', 'url', 'referer', 'ua', 'is_bot', 'created')
         ->from('table.sa_visits')->order('id', \Typecho\Db::SORT_DESC)->limit(50));
 } catch (\Throwable $e) {
     $recent = [];
@@ -232,21 +232,22 @@ a.back { display:inline-block; margin-bottom:16px; color:var(--accent); font-siz
   <b>最近访问明细</b>
   <div style="margin-top:10px; overflow-x:auto;">
     <table>
-      <tr><th>时间</th><th>页面</th><th>来源</th><th>设备</th><th>类型</th></tr>
+      <tr><th>时间</th><th>IP 地址</th><th>归属地</th><th>页面</th><th>来源</th><th>类型</th></tr>
       <?php if (empty($recent)): ?>
-        <tr><td colspan="5" style="color:var(--ink2);">暂无数据</td></tr>
+        <tr><td colspan="6" style="color:var(--ink2);">暂无数据</td></tr>
       <?php else: foreach ($recent as $r): ?>
         <tr>
           <td style="white-space:nowrap;"><?php echo date('m-d H:i', (int) $r['created']); ?></td>
+          <td style="white-space:nowrap;"><?php echo htmlspecialchars($r['ip'] ?: '—'); ?></td>
+          <td style="white-space:nowrap;"><?php echo htmlspecialchars($r['region'] ?: '—'); ?></td>
           <td class="url-cell"><?php echo htmlspecialchars($r['url']); ?></td>
           <td class="url-cell"><?php echo htmlspecialchars($r['referer']); ?></td>
-          <td class="url-cell" title="<?php echo htmlspecialchars($r['ua']); ?>"><?php echo htmlspecialchars(substr($r['ua'], 0, 40)); ?></td>
           <td class="<?php echo $r['is_bot'] ? 'bot' : 'human'; ?>"><?php echo $r['is_bot'] ? '爬虫' : '真人'; ?></td>
         </tr>
       <?php endforeach; endif; ?>
     </table>
   </div>
-  <p class="hint">IP 仅存 SHA-256 前 24 位哈希（脱敏），数据保留 90 天自动清理。</p>
+  <p class="hint">归属地由 ip2region 离线库解析；数据保留 90 天自动清理。</p>
 </div>
 
 </div>

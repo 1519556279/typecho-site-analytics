@@ -11,8 +11,8 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
 
 /**
  * StellarAnalytics —— 站点访问统计插件
- * 记录访问（PV/UV/IP 哈希/来源/UA/爬虫分离）、文章阅读时长、站内搜索词；后台独立报表页。
- * 数据存站点 SQLite（IP 只存 SHA-256 前 24 位脱敏），保留 90 天自动清理。
+ * 记录访问（PV/UV/IP 与归属地/来源/UA/爬虫分离）、文章阅读时长、站内搜索词；后台独立报表页。
+ * 数据存站点 SQLite（IP 与 ip2region 归属地，保留 90 天自动清理）。
  *
  * @package StellarAnalytics
  * @author 咔咔
@@ -34,6 +34,12 @@ class Plugin implements PluginInterface
 
     public static function adminFooter(): void
     {
+        /* 未登录不注入，避免登录页出现后台入口按钮 */
+        $logged = false;
+        foreach ($_COOKIE as $k => $v) {
+            if (substr($k, -13) === '__typecho_uid') { $logged = true; break; }
+        }
+        if (!$logged) return;
         $panel = rtrim(\Typecho\Widget::widget('Widget_Options')->siteUrl, '/') . '/usr/plugins/StellarAnalytics/panel.php';
         echo <<<JS
 <script>
@@ -47,6 +53,8 @@ class Plugin implements PluginInterface
     b.innerHTML = '📊 访问统计';
     var bar = document.querySelector('.sa-topbar-right') || document.body;
     bar.insertBefore(b, bar.firstChild);
+    /* 覆盖 Typecho common-js 的 target="_blank"，当前标签页打开 */
+    setTimeout(function () { var x = document.getElementById('sa-an-btn'); if (x) x.removeAttribute('target'); }, 100);
 })();
 </script>
 JS;
@@ -99,7 +107,7 @@ JS;
                 }
             }
             /* 兼容旧版本表结构：补齐缺失列（已存在则报错忽略） */
-            foreach (['cid' => 'INT DEFAULT 0'] as $col => $def) {
+            foreach (['cid' => 'INT DEFAULT 0', 'ip' => 'VARCHAR(64)', 'region' => 'VARCHAR(128)'] as $col => $def) {
                 try {
                     $db->query("ALTER TABLE {$p}sa_visits ADD COLUMN {$col} {$def}");
                 } catch (\Throwable $e) {
@@ -171,6 +179,37 @@ JS;
         return substr(hash('sha256', $ip), 0, 24);
     }
 
+    /* 查询 IP 归属地（ip2region 离线库，返回「省市」如 浙江省宁波市） */
+    public static function queryRegion($ip): string
+    {
+        static $searcher = null;
+        static $loaded = false;
+        if (!$loaded) {
+            $loaded = true;
+            $file = __DIR__ . '/data/ip2region_v4.xdb';
+            if (is_file($file)) {
+                require_once __DIR__ . '/Searcher.class.php';
+                try {
+                    $searcher = \ip2region\xdb\Searcher::newWithFileOnly(\ip2region\xdb\Util::versionFromName('V4'), $file);
+                } catch (\Throwable $e) {
+                    $searcher = null;
+                }
+            }
+        }
+        if ($searcher === null || !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return '';
+        }
+        try {
+            $parts = explode('|', (string) $searcher->search($ip));
+            /* v4 返回格式：国家|省|市|ISP|国家码，取省[1]+市[2] */
+            $prov = ($parts[1] ?? '') === '0' ? '' : (string) ($parts[1] ?? '');
+            $city = ($parts[2] ?? '') === '0' ? '' : (string) ($parts[2] ?? '');
+            return trim($prov . $city);
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+
     public static function isBot($ua): bool
     {
         return (bool) preg_match('/bot|spider|crawl|baiduspider|googlebot|bingbot|slurp|sogou|yandex|bytespider|petalbot/i', (string) $ua);
@@ -180,7 +219,8 @@ JS;
     {
         try {
             $db = \Typecho\Db::get();
-            $ip = self::hashIp(self::clientIp());
+            $rawIp = self::clientIp();
+            $ip = self::hashIp($rawIp);
             $last = $db->fetchRow($db->select('created')->from('table.sa_visits')
                 ->where('ip_hash = ? AND url = ?', $ip, $url)->order('id', \Typecho\Db::SORT_DESC)->limit(1));
             if ($last && time() - (int) $last['created'] < 60) {
@@ -188,7 +228,8 @@ JS;
             }
             $host = parse_url((string) $referer, PHP_URL_HOST);
             $db->query($db->insert('table.sa_visits')->rows([
-                'ip_hash' => $ip, 'url' => $url, 'cid' => (int) $cid,
+                'ip_hash' => $ip, 'ip' => $rawIp, 'region' => self::queryRegion($rawIp),
+                'url' => $url, 'cid' => (int) $cid,
                 'referer' => $host ?: '(直接访问)', 'ua' => (string) $ua,
                 'is_bot' => self::isBot($ua) ? 1 : 0, 'created' => time(),
             ]));
